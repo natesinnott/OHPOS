@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+
 struct AmountKeypad: View {
     @Binding var amountCents: Int
     var body: some View {
