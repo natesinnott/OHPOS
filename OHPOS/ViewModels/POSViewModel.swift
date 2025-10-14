@@ -8,6 +8,7 @@
 import SwiftUI
 import Foundation
 import Combine
+import Network
 
 
 fileprivate struct CreatePIResponse: Decodable { let id: String }
@@ -38,8 +39,35 @@ final class POSViewModel: ObservableObject {
 
     private let backend: TerminalBackend
 
+    private let session: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.waitsForConnectivity = true
+        cfg.allowsConstrainedNetworkAccess = true
+        cfg.allowsExpensiveNetworkAccess = true
+        cfg.timeoutIntervalForRequest = 12
+        cfg.timeoutIntervalForResource = 30
+        return URLSession(configuration: cfg)
+    }()
+
+    private let pathMonitor = NWPathMonitor()
+    private let pathQueue = DispatchQueue(label: "ohpos.netpath")
+    private var awaitingNetworkRecovery = false
+    private var pendingIntentId: String? = nil
+
     init(backend: TerminalBackend = LiveBackend()) {
         self.backend = backend
+
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor in
+                guard let self = self else { return }
+                if self.awaitingNetworkRecovery, let pi = self.pendingIntentId {
+                    self.statusMessage = "Rechecking payment status…"
+                    await self.pollUntilTerminal(intentID: pi)
+                }
+            }
+        }
+        pathMonitor.start(queue: pathQueue)
     }
 
     // Timing constants (logic-only; UI-specific constants remain in the View)
@@ -76,7 +104,7 @@ final class POSViewModel: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        self.session.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
             Task { @MainActor in
                 if let error = error {
@@ -99,6 +127,7 @@ final class POSViewModel: ObservableObject {
                     self.statusMessage = "Backend error: \(HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode))"
                     self.isCharging = false
                     self.result = .failed
+                    self.scheduleReset(finalWasSuccess: false)
                     return
                 }
 
@@ -111,8 +140,11 @@ final class POSViewModel: ObservableObject {
                         if success {
                             self.statusMessage = "Processing on reader…"
                         } else {
-                            self.fail("Reader error: could not start transaction")
-                            self.scheduleReset(finalWasSuccess: false)
+                            // Treat a failed start as indeterminate; verify with backend before declaring failure
+                            self.awaitingNetworkRecovery = true
+                            self.pendingIntentId = intentID
+                            self.statusMessage = "Reader error — verifying payment…"
+                            await self.pollUntilTerminal(intentID: intentID)
                             return
                         }
 
@@ -122,9 +154,12 @@ final class POSViewModel: ObservableObject {
                             await self.pollUntilTerminal(intentID: intentID)
                         }
                     } catch {
-                        self.statusMessage = "Error processing payment: \(error.localizedDescription)"
-                        self.result = .failed
-                        self.isCharging = false
+                        // Treat network errors/timeouts as INDETERMINATE: verify with backend instead of failing immediately
+                        self.awaitingNetworkRecovery = true
+                        self.pendingIntentId = intentID
+                        self.statusMessage = "Network issue — verifying payment…"
+                        await self.pollUntilTerminal(intentID: intentID)
+                        return
                     }
                 }
             }
@@ -148,13 +183,18 @@ final class POSViewModel: ObservableObject {
         var finished = false
         let maxPolls = totalSeconds / 3
 
+        var hadNetworkErrors = false
+
         for _ in 0..<maxPolls {
             do {
                 let piStatus = try await backend.pollPIStatus(intentID)
-                switch piStatus.status {
+                let statusToUse = piStatus.effectiveStatus ?? piStatus.status
+                switch statusToUse {
                 case "succeeded":
                     finalWasSuccess = true
                     finished = true
+                    self.awaitingNetworkRecovery = false
+                    self.pendingIntentId = nil
                     ticker?.cancel(); ticker = nil
                     statusMessage = "Payment completed!"
                     result = .approved
@@ -166,6 +206,8 @@ final class POSViewModel: ObservableObject {
                 case "requires_payment_method":
                     if let errMsg = piStatus.errorMessage, !errMsg.isEmpty {
                         finished = true
+                        self.awaitingNetworkRecovery = false
+                        self.pendingIntentId = nil
                         ticker?.cancel(); ticker = nil
                         fail(errMsg)
                     } else if let outcome = piStatus.latest_charge_outcome_type,
@@ -176,6 +218,8 @@ final class POSViewModel: ObservableObject {
                         fail(msg)
                     } else if let failMsg = piStatus.latest_charge_failure_message, !failMsg.isEmpty {
                         finished = true
+                        self.awaitingNetworkRecovery = false
+                        self.pendingIntentId = nil
                         ticker?.cancel(); ticker = nil
                         fail(failMsg)
                     } else {
@@ -194,6 +238,8 @@ final class POSViewModel: ObservableObject {
 
                 case "canceled", "requires_capture", "requires_confirmation", "requires_action":
                     finished = true
+                    self.awaitingNetworkRecovery = false
+                    self.pendingIntentId = nil
                     ticker?.cancel(); ticker = nil
                     fail(piStatus.status)
 
@@ -202,6 +248,7 @@ final class POSViewModel: ObservableObject {
                 }
             } catch {
                 print("Polling error: \(error.localizedDescription)")
+                hadNetworkErrors = true
             }
 
             if finished { break }
@@ -210,8 +257,55 @@ final class POSViewModel: ObservableObject {
 
         ticker?.cancel(); ticker = nil
 
+        if !finished && hadNetworkErrors {
+            // Give the app a short grace period to recover after network returns
+            statusMessage = "Rechecking payment status…"
+            let extraAttempts = 10 // ~30 seconds with 3s interval
+            for _ in 0..<extraAttempts {
+                do {
+                    let piStatus = try await backend.pollPIStatus(intentID)
+                    let statusToUse = piStatus.effectiveStatus ?? piStatus.status
+                    switch statusToUse {
+                    case "succeeded":
+                        finalWasSuccess = true
+                        finished = true
+                        self.awaitingNetworkRecovery = false
+                        self.pendingIntentId = nil
+                        statusMessage = "Payment completed!"
+                        result = .approved
+                    case "requires_payment_method":
+                        finished = true
+                        self.awaitingNetworkRecovery = false
+                        self.pendingIntentId = nil
+                        fail(piStatus.latest_charge_failure_message ?? "Card declined")
+                    case "canceled":
+                        finished = true
+                        self.awaitingNetworkRecovery = false
+                        self.pendingIntentId = nil
+                        fail("canceled")
+                    default:
+                        break
+                    }
+                } catch {
+                    // still offline? keep looping this short grace window
+                }
+                if finished { break }
+                try? await Task.sleep(nanoseconds: pollIntervalNs)
+            }
+        }
+
         if !finished {
+            self.awaitingNetworkRecovery = false
+            self.pendingIntentId = nil
             fail("No card presented (timeout)")
+        }
+
+        // If the app never reconnected to verify the payment and polling never succeeded or failed,
+        // show a clear message to check the Stripe dashboard before retrying.
+        if !finalWasSuccess && finished == false {
+            await MainActor.run {
+                self.statusMessage = "Status unknown — please check Stripe dashboard before retrying."
+            }
         }
 
         scheduleReset(finalWasSuccess: finalWasSuccess)

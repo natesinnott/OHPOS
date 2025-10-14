@@ -57,7 +57,7 @@ struct ContentView: View {
 
                 if let result = vm.result {
                     PaymentResultOverlay(result: result, amountCents: vm.amountCents, currencySymbol: currencySymbol, statusMessage: vm.statusMessage)
-                        .transition(.scale.combined(with: .opacity))
+                        .transition( .opacity)
                         .zIndex(10)
                 }
             }
