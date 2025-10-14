@@ -9,7 +9,23 @@ import SwiftUI
 import Combine
 
 
+
 fileprivate struct CreatePIResponse: Decodable { let id: String }
+
+// MARK: - Backend Abstraction for Testability
+protocol TerminalBackend {
+    func processOnReader(paymentIntentId: String) async throws -> Bool
+    func pollPIStatus(_ intentID: String) async throws -> PIStatus
+}
+
+struct LiveBackend: TerminalBackend {
+    func processOnReader(paymentIntentId: String) async throws -> Bool {
+        try await Backend.shared.processOnReader(paymentIntentId: paymentIntentId)
+    }
+    func pollPIStatus(_ intentID: String) async throws -> PIStatus {
+        try await Backend.shared.pollPIStatus(intentID)
+    }
+}
 
 @MainActor
 final class POSViewModel: ObservableObject {
@@ -19,6 +35,12 @@ final class POSViewModel: ObservableObject {
     @Published var isCharging: Bool = false
     @Published var result: PaymentResult? = nil
     @Published var statusMessage: String = "Idle"
+
+    private let backend: TerminalBackend
+
+    init(backend: TerminalBackend = LiveBackend()) {
+        self.backend = backend
+    }
 
     // Timing constants (logic-only; UI-specific constants remain in the View)
     private enum Timing {
@@ -85,7 +107,7 @@ final class POSViewModel: ObservableObject {
 
                 Task { @MainActor in
                     do {
-                        let success = try await Backend.shared.processOnReader(paymentIntentId: intentID)
+                        let success = try await self.backend.processOnReader(paymentIntentId: intentID)
                         if success {
                             self.statusMessage = "Processing on reader…"
                         } else {
@@ -128,7 +150,7 @@ final class POSViewModel: ObservableObject {
 
         for _ in 0..<maxPolls {
             do {
-                let piStatus = try await Backend.shared.pollPIStatus(intentID)
+                let piStatus = try await backend.pollPIStatus(intentID)
                 switch piStatus.status {
                 case "succeeded":
                     finalWasSuccess = true
@@ -209,14 +231,17 @@ final class POSViewModel: ObservableObject {
     }
 }
 
+@MainActor
 struct ContentView: View {
     // MARK: - State
-    @StateObject private var vm = POSViewModel()
+    @StateObject private var vm: POSViewModel
     @State private var currencySymbol: String = "$"
-    
+
+    init() {
+        _vm = StateObject(wrappedValue: POSViewModel())
+    }
 
     var body: some View {
-
         GeometryReader { geo in
             let isPortrait = geo.size.height > geo.size.width
             let sidebarWidth = isPortrait
@@ -261,7 +286,6 @@ struct ContentView: View {
             .preferredColorScheme(.light)
         }
     }
-
 }
 
 // MARK: - Sidebar
@@ -317,6 +341,8 @@ fileprivate struct Sidebar: View {
 
             Text("\(currencySymbol)\(displayAmount(amountCents))")
                 .font(.system(size: 54, weight: .heavy, design: .rounded))
+                .accessibilityLabel("Amount")
+                .accessibilityValue("\(currencySymbol)\(displayAmount(amountCents))")
                 .padding(.top, 4)
 
             GlassCard {
@@ -340,6 +366,8 @@ fileprivate struct Sidebar: View {
                     }
                     .buttonStyle(GlassButtonStyle(isEnabled: amountCents > 0 && (category != nil) && !isCharging))
                     .disabled((amountCents == 0) || (category == nil) || isCharging)
+                    .accessibilityLabel(chargeButtonText)
+                    .accessibilityHint("Start card payment")
 
 
                     Text("Status: \(statusMessage)")
@@ -347,6 +375,8 @@ fileprivate struct Sidebar: View {
                         .foregroundColor(.white.opacity(0.9))
                         .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
                         .frame(maxWidth: .infinity, alignment: .center)
+                        .accessibilityLabel("Status")
+                        .accessibilityValue(statusMessage)
                 }
             }
 
@@ -442,6 +472,8 @@ fileprivate struct Keypad: View {
                                     .font(.system(size: fontSize, weight: .semibold, design: .default))
                                     .frame(maxWidth: .infinity)
                                     .frame(height: buttonH)
+                                    .contentShape(Rectangle())
+                                    .accessibilityLabel(key)
                             }
                             .buttonStyle(GlassPadStyle())
                         }
@@ -477,12 +509,13 @@ fileprivate struct PaymentResultOverlay: View {
 
             // Centered squircle card
             VStack(spacing: 16) {
-                Image(systemName: result == .approved ? "checkmark.seal.fill" : "xmark.seal.fill")
+                Image(systemName: result == .approved ? "checkmark.circle" : "creditcard.trianglebadge.exclamationmark")
+                    .foregroundColor(result == .approved ? .green : .red)
                     .font(.system(size: 56, weight: .bold))
                     .symbolRenderingMode(.hierarchical)
                 Text(result == .approved ? "Payment Approved" : "Payment Failed")
                     .font(.title2.bold())
-                Text(statusMessage).font(.title3.italic())
+                if result != .approved { Text(statusMessage).font(.caption) }
                 Text("\(currencySymbol)\(displayAmount(amountCents))")
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -494,7 +527,7 @@ fileprivate struct PaymentResultOverlay: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 36, style: .continuous)
-                    .stroke(Color.white.opacity(0.35), lineWidth: 0.5)
+                    .stroke(Color.white.opacity(0.55), lineWidth: 0.5)
             )
             .shadow(color: .black.opacity(0.18), radius: 24, y: 12)
         }
@@ -566,4 +599,4 @@ fileprivate func displayAmount(_ cents: Int) -> String {
     return String(format: "%.2f", v)
 }
 
-#Preview { ContentView() }
+#Preview { @MainActor in ContentView() }
