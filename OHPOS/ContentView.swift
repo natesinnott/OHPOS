@@ -6,75 +6,31 @@
 //
 
 import SwiftUI
+import Combine
+
 
 fileprivate struct CreatePIResponse: Decodable { let id: String }
 
-struct ContentView: View {
-    // MARK: - State
-    @State private var amountCents: Int = 0
-    @State private var category: Category? = nil
-    @State private var currencySymbol: String = "$"
-    @State private var isCharging: Bool = false
-    @State private var result: PaymentResult? = nil
-    @State private var statusMessage: String = "Idle"
-    private enum UIConstants {
-        static let pollTotalSeconds: Int = 90        // overall poll window
-        static let pollIntervalSeconds: Int = 3      // poll cadence
-        static let waitTickMilliseconds: Int = 200   // smooth countdown ticker
-        static let successResetDelay: Double = 1.6   // overlay dismiss after success
-        static let failResetDelay: Double = 3.2      // overlay dismiss after fail/timeout
-    }
-    
+@MainActor
+final class POSViewModel: ObservableObject {
+    // Publicly observed state
+    @Published var amountCents: Int = 0
+    @Published var category: Category? = nil
+    @Published var isCharging: Bool = false
+    @Published var result: PaymentResult? = nil
+    @Published var statusMessage: String = "Idle"
 
-    var body: some View {
-
-        GeometryReader { geo in
-            let isPortrait = geo.size.height > geo.size.width
-            let sidebarWidth = isPortrait
-                ? min(560, max(360, geo.size.width * 0.86))
-                : min(760, max(520, geo.size.width * 0.56))
-            let containerHeight = isPortrait
-                ? min(geo.size.height * 0.92, 860)
-                : min(geo.size.height * 0.94, 920)
-            ZStack {
-                OHPBackground()
-                    .ignoresSafeArea()
-
-                HStack {
-                    Spacer(minLength: 0)
-                    VStack {
-                        Spacer(minLength: 0)
-                        Sidebar(
-                            amountCents: $amountCents,
-                            category: $category,
-                            currencySymbol: currencySymbol,
-                            isCharging: $isCharging,
-                            statusMessage: $statusMessage,
-                            isPortrait: isPortrait,
-                            containerHeight: containerHeight,
-                            onCharge: charge
-                        )
-                        .frame(maxWidth: sidebarWidth)
-                        .frame(maxHeight: containerHeight)
-                        .padding(.horizontal, isPortrait ? 18 : 24)
-                        Spacer(minLength: 0)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.vertical, 24)
-
-                if let result {
-                    PaymentResultOverlay(result: result, amountCents: amountCents, currencySymbol: currencySymbol, statusMessage: statusMessage)
-                        .transition(.scale.combined(with: .opacity))
-                        .zIndex(10)
-                }
-            }
-            .preferredColorScheme(.light)
-        }
+    // Timing constants (logic-only; UI-specific constants remain in the View)
+    private enum Timing {
+        static let pollTotalSeconds: Int = 90
+        static let pollIntervalSeconds: Int = 3
+        static let waitTickMilliseconds: Int = 200
+        static let successResetDelay: Double = 1.6
+        static let failResetDelay: Double = 3.2
     }
 
-    // MARK: - Actions
-    private func charge() {
+    // Entry point from the UI
+    func charge() {
         guard amountCents > 0 else { return }
         guard !isCharging else { return }
         isCharging = true
@@ -98,196 +54,214 @@ struct ContentView: View {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            DispatchQueue.main.async {
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            Task { @MainActor in
                 if let error = error {
-                    statusMessage = "Network error: \(error.localizedDescription)"
-                    isCharging = false
-                    result = .failed
+                    self.statusMessage = "Network error: \(error.localizedDescription)"
+                    self.isCharging = false
+                    self.result = .failed
                     return
                 }
 
                 guard let httpResponse = response as? HTTPURLResponse else {
-                    statusMessage = "No response from backend"
-                    isCharging = false
-                    result = .failed
+                    self.statusMessage = "No response from backend"
+                    self.isCharging = false
+                    self.result = .failed
                     return
                 }
 
                 guard (200..<300).contains(httpResponse.statusCode),
                       let data = data,
                       let create = try? JSONDecoder().decode(CreatePIResponse.self, from: data) else {
-                    statusMessage = "Backend error: \(HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode))"
-                    isCharging = false
-                    result = .failed
+                    self.statusMessage = "Backend error: \(HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode))"
+                    self.isCharging = false
+                    self.result = .failed
                     return
                 }
 
                 let intentID = create.id
-                statusMessage = "Sending to reader…"
+                self.statusMessage = "Sending to reader…"
 
-                Task {
+                Task { @MainActor in
                     do {
                         let success = try await Backend.shared.processOnReader(paymentIntentId: intentID)
-                        DispatchQueue.main.async {
-                            if success {
-                                statusMessage = "Processing on reader…"
-                            } else {
-                                statusMessage = "Reader error: could not start transaction"
-                                result = .failed
-                                isCharging = false
-                                return
-                            }
-                        }
-
-                        if !success {
-                            // Ensure the failure overlay dismisses even if processing never started
-                            DispatchQueue.main.asyncAfter(deadline: .now() + UIConstants.failResetDelay) {
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                                    amountCents = 0
-                                    category = nil
-                                    result = nil
-                                    statusMessage = "Ready for next transaction."
-                                    isCharging = false
-                                }
-                            }
-                        }
-
-                        // --- Begin new polling block ---
                         if success {
-                            // Smooth countdown + polling
-                            statusMessage = "Processing on reader…"
-
-                            Task {
-                                var finalWasSuccess = false
-                                let totalSeconds = UIConstants.pollTotalSeconds
-                                let pollIntervalNs: UInt64 = UInt64(UIConstants.pollIntervalSeconds) * 1_000_000_000
-                                let tickIntervalNs: UInt64 = UInt64(UIConstants.waitTickMilliseconds) * 1_000_000
-                                let deadline = Date().addingTimeInterval(TimeInterval(totalSeconds))
-
-                                var ticker: Task<Void, Never>? = nil
-                                var showingWait = false
-                                var finished = false
-                                let maxPolls = totalSeconds / 3
-
-                                for _ in 0..<maxPolls {
-                                    do {
-                                        let piStatus = try await Backend.shared.pollPIStatus(intentID)
-                                        switch piStatus.status {
-                                        case "succeeded":
-                                            finalWasSuccess = true
-                                            finished = true
-                                            ticker?.cancel(); ticker = nil
-                                            DispatchQueue.main.async {
-                                                statusMessage = "Payment completed!"
-                                                result = .approved
-                                            }
-
-                                        case "processing":
-                                            // Stop the waiting ticker if it was running
-                                            if showingWait { ticker?.cancel(); ticker = nil; showingWait = false }
-                                            DispatchQueue.main.async {
-                                                statusMessage = "Processing on reader…"
-                                            }
-
-                                        case "requires_payment_method":
-                                            // Treat explicit PI error or latest charge failure/outcome seller message as a decline
-                                            if let errMsg = piStatus.errorMessage, !errMsg.isEmpty {
-                                                finished = true
-                                                ticker?.cancel(); ticker = nil
-                                                DispatchQueue.main.async {
-                                                    statusMessage = "Payment failed (\(errMsg))"
-                                                    result = .failed
-                                                }
-                                            } else if let outcome = piStatus.latest_charge_outcome_type,
-                                                      ["issuer_declined", "blocked", "reversed"].contains(outcome) {
-                                                finished = true
-                                                ticker?.cancel(); ticker = nil
-                                                let msg = piStatus.latest_charge_outcome_seller_message ?? "Card declined"
-                                                DispatchQueue.main.async {
-                                                    statusMessage = "Payment failed (\(msg))"
-                                                    result = .failed
-                                                }
-                                            } else if let failMsg = piStatus.latest_charge_failure_message, !failMsg.isEmpty {
-                                                finished = true
-                                                ticker?.cancel(); ticker = nil
-                                                DispatchQueue.main.async {
-                                                    statusMessage = "Payment failed (\(failMsg))"
-                                                    result = .failed
-                                                }
-                                            } else {
-                                                // Otherwise we're still waiting for a card — run smooth countdown
-                                                if !showingWait {
-                                                    showingWait = true
-                                                    ticker = Task {
-                                                        while !Task.isCancelled {
-                                                            let remaining = max(0, Int(ceil(deadline.timeIntervalSinceNow)))
-                                                            DispatchQueue.main.async {
-                                                                statusMessage = "Waiting for card… (\(remaining)s)"
-                                                            }
-                                                            if remaining <= 0 { break }
-                                                            try? await Task.sleep(nanoseconds: tickIntervalNs)
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                        case "canceled", "requires_capture", "requires_confirmation", "requires_action":
-                                            finished = true
-                                            ticker?.cancel(); ticker = nil
-                                            DispatchQueue.main.async {
-                                                statusMessage = "Payment failed (\(piStatus.status))"
-                                                result = .failed
-                                            }
-
-                                        default:
-                                            // Unknown/intermediate — keep polling
-                                            break
-                                        }
-                                    } catch {
-                                        print("Polling error: \(error.localizedDescription)")
-                                    }
-
-                                    if finished { break }
-                                    try? await Task.sleep(nanoseconds: pollIntervalNs)
-                                }
-
-                                // Stop countdown if still running
-                                ticker?.cancel(); ticker = nil
-
-                                // If we exit the loop without marking a terminal state, treat as timeout
-                                if !finished {
-                                    DispatchQueue.main.async {
-                                        statusMessage = "No card presented (timeout)"
-                                        result = .failed
-                                    }
-                                }
-
-                                // Unified reset after success/failure/timeout
-                                let delay: Double = finalWasSuccess ? UIConstants.successResetDelay : UIConstants.failResetDelay
-                                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                                        amountCents = 0
-                                        category = nil
-                                        result = nil
-                                        statusMessage = "Ready for next transaction."
-                                        isCharging = false
-                                    }
-                                }
-                            }
+                            self.statusMessage = "Processing on reader…"
+                        } else {
+                            self.fail("Reader error: could not start transaction")
+                            self.scheduleReset(finalWasSuccess: false)
+                            return
                         }
-                        // --- End new polling block ---
+
+                        // --- Polling ---
+                        if success {
+                            self.statusMessage = "Processing on reader…"
+                            await self.pollUntilTerminal(intentID: intentID)
+                        }
                     } catch {
-                        DispatchQueue.main.async {
-                            statusMessage = "Error processing payment: \(error.localizedDescription)"
-                            result = .failed
-                            isCharging = false
-                        }
+                        self.statusMessage = "Error processing payment: \(error.localizedDescription)"
+                        self.result = .failed
+                        self.isCharging = false
                     }
                 }
             }
         }.resume()
     }
+
+    private func fail(_ message: String) {
+        statusMessage = "Payment failed (\(message))"
+        result = .failed
+    }
+
+    private func pollUntilTerminal(intentID: String) async {
+        var finalWasSuccess = false
+        let totalSeconds = Timing.pollTotalSeconds
+        let pollIntervalNs: UInt64 = UInt64(Timing.pollIntervalSeconds) * 1_000_000_000
+        let tickIntervalNs: UInt64 = UInt64(Timing.waitTickMilliseconds) * 1_000_000
+        let deadline = Date().addingTimeInterval(TimeInterval(totalSeconds))
+
+        var ticker: Task<Void, Never>? = nil
+        var showingWait = false
+        var finished = false
+        let maxPolls = totalSeconds / 3
+
+        for _ in 0..<maxPolls {
+            do {
+                let piStatus = try await Backend.shared.pollPIStatus(intentID)
+                switch piStatus.status {
+                case "succeeded":
+                    finalWasSuccess = true
+                    finished = true
+                    ticker?.cancel(); ticker = nil
+                    statusMessage = "Payment completed!"
+                    result = .approved
+
+                case "processing":
+                    if showingWait { ticker?.cancel(); ticker = nil; showingWait = false }
+                    statusMessage = "Processing on reader…"
+
+                case "requires_payment_method":
+                    if let errMsg = piStatus.errorMessage, !errMsg.isEmpty {
+                        finished = true
+                        ticker?.cancel(); ticker = nil
+                        fail(errMsg)
+                    } else if let outcome = piStatus.latest_charge_outcome_type,
+                              ["issuer_declined", "blocked", "reversed"].contains(outcome) {
+                        finished = true
+                        ticker?.cancel(); ticker = nil
+                        let msg = piStatus.latest_charge_outcome_seller_message ?? "Card declined"
+                        fail(msg)
+                    } else if let failMsg = piStatus.latest_charge_failure_message, !failMsg.isEmpty {
+                        finished = true
+                        ticker?.cancel(); ticker = nil
+                        fail(failMsg)
+                    } else {
+                        if !showingWait {
+                            showingWait = true
+                            ticker = Task {
+                                while !Task.isCancelled {
+                                    let remaining = max(0, Int(ceil(deadline.timeIntervalSinceNow)))
+                                    await MainActor.run { self.statusMessage = "Waiting for card… (\(remaining)s)" }
+                                    if remaining <= 0 { break }
+                                    try? await Task.sleep(nanoseconds: tickIntervalNs)
+                                }
+                            }
+                        }
+                    }
+
+                case "canceled", "requires_capture", "requires_confirmation", "requires_action":
+                    finished = true
+                    ticker?.cancel(); ticker = nil
+                    fail(piStatus.status)
+
+                default:
+                    break
+                }
+            } catch {
+                print("Polling error: \(error.localizedDescription)")
+            }
+
+            if finished { break }
+            try? await Task.sleep(nanoseconds: pollIntervalNs)
+        }
+
+        ticker?.cancel(); ticker = nil
+
+        if !finished {
+            fail("No card presented (timeout)")
+        }
+
+        scheduleReset(finalWasSuccess: finalWasSuccess)
+    }
+
+    private func scheduleReset(finalWasSuccess: Bool) {
+        let delay: Double = finalWasSuccess ? Timing.successResetDelay : Timing.failResetDelay
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                self.amountCents = 0
+                self.category = nil
+                self.result = nil
+                self.statusMessage = "Ready for next transaction."
+                self.isCharging = false
+            }
+        }
+    }
+}
+
+struct ContentView: View {
+    // MARK: - State
+    @StateObject private var vm = POSViewModel()
+    @State private var currencySymbol: String = "$"
+    
+
+    var body: some View {
+
+        GeometryReader { geo in
+            let isPortrait = geo.size.height > geo.size.width
+            let sidebarWidth = isPortrait
+                ? min(560, max(360, geo.size.width * 0.86))
+                : min(760, max(520, geo.size.width * 0.56))
+            let containerHeight = isPortrait
+                ? min(geo.size.height * 0.92, 860)
+                : min(geo.size.height * 0.94, 920)
+            ZStack {
+                OHPBackground()
+                    .ignoresSafeArea()
+
+                HStack {
+                    Spacer(minLength: 0)
+                    VStack {
+                        Spacer(minLength: 0)
+                        Sidebar(
+                            amountCents: $vm.amountCents,
+                            category: $vm.category,
+                            currencySymbol: currencySymbol,
+                            isCharging: $vm.isCharging,
+                            statusMessage: $vm.statusMessage,
+                            isPortrait: isPortrait,
+                            containerHeight: containerHeight,
+                            onCharge: vm.charge
+                        )
+                        .frame(maxWidth: sidebarWidth)
+                        .frame(maxHeight: containerHeight)
+                        .padding(.horizontal, isPortrait ? 18 : 24)
+                        Spacer(minLength: 0)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 24)
+
+                if let result = vm.result {
+                    PaymentResultOverlay(result: result, amountCents: vm.amountCents, currencySymbol: currencySymbol, statusMessage: vm.statusMessage)
+                        .transition(.scale.combined(with: .opacity))
+                        .zIndex(10)
+                }
+            }
+            .preferredColorScheme(.light)
+        }
+    }
+
 }
 
 // MARK: - Sidebar
