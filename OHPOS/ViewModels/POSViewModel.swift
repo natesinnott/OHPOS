@@ -9,6 +9,7 @@ import SwiftUI
 import Foundation
 import Combine
 import Network
+import AVFoundation
 
 
 fileprivate struct CreatePIResponse: Decodable { let id: String }
@@ -111,6 +112,7 @@ final class POSViewModel: ObservableObject {
                     self.statusMessage = "Network error: \(error.localizedDescription)"
                     self.isCharging = false
                     self.result = .failed
+                    self.scheduleReset(finalWasSuccess: false)
                     return
                 }
 
@@ -118,6 +120,7 @@ final class POSViewModel: ObservableObject {
                     self.statusMessage = "No response from backend"
                     self.isCharging = false
                     self.result = .failed
+                    self.scheduleReset(finalWasSuccess: false)
                     return
                 }
 
@@ -171,6 +174,17 @@ final class POSViewModel: ObservableObject {
         result = .failed
     }
 
+    // MARK: - Sounds
+    // Common system sound IDs worth trying for decline:
+    // 1022: Classic short failure beep
+    // 1053: Critical error buzz (longer)
+    // 1073: Subtle chirp ("number not in service" vibe)
+    // 1006: Default alert chime
+    private let declineSoundID: SystemSoundID = 1053
+    private func playDeclineSound() {
+        AudioServicesPlaySystemSound(declineSoundID)
+    }
+
     private func pollUntilTerminal(intentID: String) async {
         var finalWasSuccess = false
         let totalSeconds = Timing.pollTotalSeconds
@@ -193,6 +207,7 @@ final class POSViewModel: ObservableObject {
                 case "succeeded":
                     finalWasSuccess = true
                     finished = true
+                    AudioServicesPlaySystemSound(1407)
                     self.awaitingNetworkRecovery = false
                     self.pendingIntentId = nil
                     ticker?.cancel(); ticker = nil
@@ -209,18 +224,21 @@ final class POSViewModel: ObservableObject {
                         self.awaitingNetworkRecovery = false
                         self.pendingIntentId = nil
                         ticker?.cancel(); ticker = nil
+                        playDeclineSound()
                         fail(errMsg)
                     } else if let outcome = piStatus.latest_charge_outcome_type,
                               ["issuer_declined", "blocked", "reversed"].contains(outcome) {
                         finished = true
                         ticker?.cancel(); ticker = nil
                         let msg = piStatus.latest_charge_outcome_seller_message ?? "Card declined"
+                        playDeclineSound()
                         fail(msg)
                     } else if let failMsg = piStatus.latest_charge_failure_message, !failMsg.isEmpty {
                         finished = true
                         self.awaitingNetworkRecovery = false
                         self.pendingIntentId = nil
                         ticker?.cancel(); ticker = nil
+                        playDeclineSound()
                         fail(failMsg)
                     } else {
                         if !showingWait {
@@ -241,6 +259,7 @@ final class POSViewModel: ObservableObject {
                     self.awaitingNetworkRecovery = false
                     self.pendingIntentId = nil
                     ticker?.cancel(); ticker = nil
+                    playDeclineSound()
                     fail(piStatus.status)
 
                 default:
@@ -277,11 +296,13 @@ final class POSViewModel: ObservableObject {
                         finished = true
                         self.awaitingNetworkRecovery = false
                         self.pendingIntentId = nil
+                        playDeclineSound()
                         fail(piStatus.latest_charge_failure_message ?? "Card declined")
                     case "canceled":
                         finished = true
                         self.awaitingNetworkRecovery = false
                         self.pendingIntentId = nil
+                        playDeclineSound()
                         fail("canceled")
                     default:
                         break
@@ -297,6 +318,7 @@ final class POSViewModel: ObservableObject {
         if !finished {
             self.awaitingNetworkRecovery = false
             self.pendingIntentId = nil
+            playDeclineSound()
             fail("No card presented (timeout)")
         }
 
@@ -304,6 +326,7 @@ final class POSViewModel: ObservableObject {
         // show a clear message to check the Stripe dashboard before retrying.
         if !finalWasSuccess && finished == false {
             await MainActor.run {
+                playDeclineSound()
                 self.statusMessage = "Status unknown — please check Stripe dashboard before retrying."
             }
         }
