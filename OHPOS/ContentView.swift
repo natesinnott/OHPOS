@@ -7,6 +7,8 @@
 
 import SwiftUI
 
+fileprivate struct CreatePIResponse: Decodable { let id: String }
+
 struct ContentView: View {
     // MARK: - State
     @State private var amountCents: Int = 0
@@ -76,7 +78,6 @@ struct ContentView: View {
         guard amountCents > 0 else { return }
         guard !isCharging else { return }
         isCharging = true
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         statusMessage = "Creating PaymentIntent…"
 
         guard let url = URL(string: "https://api.operahouseplayers.org/api/payments") else {
@@ -115,19 +116,19 @@ struct ContentView: View {
 
                 guard (200..<300).contains(httpResponse.statusCode),
                       let data = data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let intentID = json["id"] as? String else {
+                      let create = try? JSONDecoder().decode(CreatePIResponse.self, from: data) else {
                     statusMessage = "Backend error: \(HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode))"
                     isCharging = false
                     result = .failed
                     return
                 }
 
+                let intentID = create.id
                 statusMessage = "Sending to reader…"
 
                 Task {
                     do {
-                        let success = try await Backend.shared.processOnReader(readerId: "simulated-wpe", paymentIntentId: intentID)
+                        let success = try await Backend.shared.processOnReader(paymentIntentId: intentID)
                         DispatchQueue.main.async {
                             if success {
                                 statusMessage = "Processing on reader…"
@@ -141,7 +142,7 @@ struct ContentView: View {
 
                         if !success {
                             // Ensure the failure overlay dismisses even if processing never started
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + UIConstants.failResetDelay) {
                                 withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
                                     amountCents = 0
                                     category = nil
@@ -179,7 +180,6 @@ struct ContentView: View {
                                             ticker?.cancel(); ticker = nil
                                             DispatchQueue.main.async {
                                                 statusMessage = "Payment completed!"
-                                                UINotificationFeedbackGenerator().notificationOccurred(.success)
                                                 result = .approved
                                             }
 
@@ -197,7 +197,6 @@ struct ContentView: View {
                                                 ticker?.cancel(); ticker = nil
                                                 DispatchQueue.main.async {
                                                     statusMessage = "Payment failed (\(errMsg))"
-                                                    UINotificationFeedbackGenerator().notificationOccurred(.error)
                                                     result = .failed
                                                 }
                                             } else if let outcome = piStatus.latest_charge_outcome_type,
@@ -207,7 +206,6 @@ struct ContentView: View {
                                                 let msg = piStatus.latest_charge_outcome_seller_message ?? "Card declined"
                                                 DispatchQueue.main.async {
                                                     statusMessage = "Payment failed (\(msg))"
-                                                    UINotificationFeedbackGenerator().notificationOccurred(.error)
                                                     result = .failed
                                                 }
                                             } else if let failMsg = piStatus.latest_charge_failure_message, !failMsg.isEmpty {
@@ -215,7 +213,6 @@ struct ContentView: View {
                                                 ticker?.cancel(); ticker = nil
                                                 DispatchQueue.main.async {
                                                     statusMessage = "Payment failed (\(failMsg))"
-                                                    UINotificationFeedbackGenerator().notificationOccurred(.error)
                                                     result = .failed
                                                 }
                                             } else {
@@ -240,7 +237,6 @@ struct ContentView: View {
                                             ticker?.cancel(); ticker = nil
                                             DispatchQueue.main.async {
                                                 statusMessage = "Payment failed (\(piStatus.status))"
-                                                UINotificationFeedbackGenerator().notificationOccurred(.error)
                                                 result = .failed
                                             }
 
@@ -263,7 +259,6 @@ struct ContentView: View {
                                 if !finished {
                                     DispatchQueue.main.async {
                                         statusMessage = "No card presented (timeout)"
-                                        UINotificationFeedbackGenerator().notificationOccurred(.error)
                                         result = .failed
                                     }
                                 }

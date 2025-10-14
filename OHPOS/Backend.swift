@@ -64,13 +64,12 @@ final class Backend {
         return try await post(url: url, json: body)
     }
     
-    func processOnReader(readerId: String, paymentIntentId: String) async throws -> Bool {
+    func processOnReader(paymentIntentId: String) async throws -> Bool {
         let url = baseURL.appendingPathComponent("/api/terminal/charge")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
-            "reader_id": readerId,
             "payment_intent_id": paymentIntentId
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
