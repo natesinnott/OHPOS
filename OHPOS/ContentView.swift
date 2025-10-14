@@ -15,6 +15,13 @@ struct ContentView: View {
     @State private var isCharging: Bool = false
     @State private var result: PaymentResult? = nil
     @State private var statusMessage: String = "Idle"
+    private enum UIConstants {
+        static let pollTotalSeconds: Int = 90        // overall poll window
+        static let pollIntervalSeconds: Int = 3      // poll cadence
+        static let waitTickMilliseconds: Int = 200   // smooth countdown ticker
+        static let successResetDelay: Double = 1.6   // overlay dismiss after success
+        static let failResetDelay: Double = 3.2      // overlay dismiss after fail/timeout
+    }
     
 
     var body: some View {
@@ -67,6 +74,7 @@ struct ContentView: View {
     // MARK: - Actions
     private func charge() {
         guard amountCents > 0 else { return }
+        guard !isCharging else { return }
         isCharging = true
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         statusMessage = "Creating PaymentIntent…"
@@ -84,6 +92,7 @@ struct ContentView: View {
         ]
 
         var request = URLRequest(url: url)
+        request.timeoutInterval = 15
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
@@ -150,9 +159,9 @@ struct ContentView: View {
 
                             Task {
                                 var finalWasSuccess = false
-                                let totalSeconds = 90
-                                let pollIntervalNs: UInt64 = 3 * 1_000_000_000 // 3s
-                                let tickIntervalNs: UInt64 = 200 * 1_000_000   // 0.2s
+                                let totalSeconds = UIConstants.pollTotalSeconds
+                                let pollIntervalNs: UInt64 = UInt64(UIConstants.pollIntervalSeconds) * 1_000_000_000
+                                let tickIntervalNs: UInt64 = UInt64(UIConstants.waitTickMilliseconds) * 1_000_000
                                 let deadline = Date().addingTimeInterval(TimeInterval(totalSeconds))
 
                                 var ticker: Task<Void, Never>? = nil
@@ -260,7 +269,7 @@ struct ContentView: View {
                                 }
 
                                 // Unified reset after success/failure/timeout
-                                let delay: Double = finalWasSuccess ? 1.6 : 3.2
+                                let delay: Double = finalWasSuccess ? UIConstants.successResetDelay : UIConstants.failResetDelay
                                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
                                         amountCents = 0
