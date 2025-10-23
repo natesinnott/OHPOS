@@ -175,11 +175,6 @@ final class POSViewModel: ObservableObject {
     }
 
     // MARK: - Sounds
-    // Common system sound IDs worth trying for decline:
-    // 1022: Classic short failure beep
-    // 1053: Critical error buzz (longer)
-    // 1073: Subtle chirp ("number not in service" vibe)
-    // 1006: Default alert chime
     private let declineSoundID: SystemSoundID = 1053
     private func playDeclineSound() {
         AudioServicesPlaySystemSound(declineSoundID)

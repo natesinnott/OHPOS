@@ -8,7 +8,7 @@
 import Foundation
 
 
-enum Category: String, CaseIterable, Identifiable { case concessions, merch; var id: String { rawValue }; var label: String { rawValue.capitalized } }
+enum Category: String, CaseIterable, Identifiable { case concessions, art, flytrap; var id: String { rawValue }; var label: String { rawValue.capitalized } }
 
 enum PaymentResult { case approved, failed }
 
