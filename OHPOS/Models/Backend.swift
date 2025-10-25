@@ -76,13 +76,18 @@ final class Backend {
         return URLSession(configuration: cfg)
     }()
     
-    func createPaymentIntent(amount: Int, currency: String, category: String) async throws -> PaymentIntentResponse {
+    func createPaymentIntent(amount: Int, currency: String, category: String, artNumber: Int? = nil) async throws -> PaymentIntentResponse {
         let url = baseURL.appendingPathComponent("/api/payments")
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "amount": amount,
             "currency": currency,
             "category": category,
         ]
+        if let artNumber {
+            body["description"] = "Art #\(artNumber) Sale"
+        } else {
+            body["description"] = category.capitalized + " Sale"
+        }
         return try await post(url: url, json: body)
     }
     

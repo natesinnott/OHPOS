@@ -11,7 +11,7 @@ import SwiftUI
 struct OHPOSApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            POSFlowView()
         }
     }
 }

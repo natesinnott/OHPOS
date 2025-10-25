@@ -11,6 +11,14 @@ import Combine
 import Network
 import AVFoundation
 
+enum POSStep {
+    case category
+    case artNumber
+    case amount
+    case summary
+    case processing
+    case result
+}
 
 fileprivate struct CreatePIResponse: Decodable { let id: String }
 
@@ -37,6 +45,15 @@ final class POSViewModel: ObservableObject {
     @Published var isCharging: Bool = false
     @Published var result: PaymentResult? = nil
     @Published var statusMessage: String = "Idle"
+    @Published var artNumber: Int? = nil
+
+    @Published var step: POSStep = .category
+    
+    @Published var autoResetEnabled: Bool = false
+
+    var canContinueFromCategory: Bool { category != nil }
+    var canContinueFromArtNumber: Bool { artNumber != nil }
+    var canContinueFromAmount: Bool { amountCents > 0 }
 
     private let backend: TerminalBackend
 
@@ -71,6 +88,36 @@ final class POSViewModel: ObservableObject {
         pathMonitor.start(queue: pathQueue)
     }
 
+    func goNext() {
+        switch step {
+        case .category:
+            if category == .art { step = .artNumber } else { step = .amount }
+        case .artNumber:
+            if canContinueFromArtNumber { step = .amount }
+        case .amount:
+            if canContinueFromAmount { step = .summary }
+        case .summary:
+            charge() // will advance internally
+        case .processing, .result:
+            break
+        }
+    }
+
+    func goBack() {
+        switch step {
+        case .category:
+            break
+        case .artNumber:
+            step = .category
+        case .amount:
+            step = (category == .art) ? .artNumber : .category
+        case .summary:
+            step = .amount
+        case .processing, .result:
+            break
+        }
+    }
+
     // Timing constants (logic-only; UI-specific constants remain in the View)
     private enum Timing {
         static let pollTotalSeconds: Int = 90
@@ -85,7 +132,16 @@ final class POSViewModel: ObservableObject {
         guard amountCents > 0 else { return }
         guard !isCharging else { return }
         isCharging = true
+        step = .processing
         statusMessage = "Creating PaymentIntent…"
+
+        if category == .art && artNumber == nil {
+            // UI should prevent this, but guard anyway to avoid bad PIs
+            isCharging = false
+            step = .artNumber
+            statusMessage = "Enter Art # (1–20)"
+            return
+        }
 
         guard let url = URL(string: "https://api.operahouseplayers.org/api/payments") else {
             statusMessage = "Error: Invalid backend URL"
@@ -93,10 +149,18 @@ final class POSViewModel: ObservableObject {
             return
         }
 
+        var desc: String
+        if category == .art, let n = artNumber {
+            desc = "Art #\(n) Sale"
+        } else {
+            desc = ((category?.rawValue ?? "Payment").capitalized) + " Sale"
+        }
+
         let payload: [String: Any] = [
             "amount": amountCents,
             "currency": "usd",
-            "category": category?.rawValue ?? "unknown"
+            "category": category?.rawValue ?? "unknown",
+            "description": desc
         ]
 
         var request = URLRequest(url: url)
@@ -112,6 +176,7 @@ final class POSViewModel: ObservableObject {
                     self.statusMessage = "Network error: \(error.localizedDescription)"
                     self.isCharging = false
                     self.result = .failed
+                    self.step = .result
                     self.scheduleReset(finalWasSuccess: false)
                     return
                 }
@@ -120,6 +185,7 @@ final class POSViewModel: ObservableObject {
                     self.statusMessage = "No response from backend"
                     self.isCharging = false
                     self.result = .failed
+                    self.step = .result
                     self.scheduleReset(finalWasSuccess: false)
                     return
                 }
@@ -130,6 +196,7 @@ final class POSViewModel: ObservableObject {
                     self.statusMessage = "Backend error: \(HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode))"
                     self.isCharging = false
                     self.result = .failed
+                    self.step = .result
                     self.scheduleReset(finalWasSuccess: false)
                     return
                 }
@@ -208,6 +275,8 @@ final class POSViewModel: ObservableObject {
                     ticker?.cancel(); ticker = nil
                     statusMessage = "Payment completed!"
                     result = .approved
+                    self.isCharging = false
+                    step = .result
 
                 case "processing":
                     if showingWait { ticker?.cancel(); ticker = nil; showingWait = false }
@@ -221,6 +290,8 @@ final class POSViewModel: ObservableObject {
                         ticker?.cancel(); ticker = nil
                         playDeclineSound()
                         fail(errMsg)
+                        self.isCharging = false
+                        self.step = .result
                     } else if let outcome = piStatus.latest_charge_outcome_type,
                               ["issuer_declined", "blocked", "reversed"].contains(outcome) {
                         finished = true
@@ -228,6 +299,8 @@ final class POSViewModel: ObservableObject {
                         let msg = piStatus.latest_charge_outcome_seller_message ?? "Card declined"
                         playDeclineSound()
                         fail(msg)
+                        self.isCharging = false
+                        self.step = .result
                     } else if let failMsg = piStatus.latest_charge_failure_message, !failMsg.isEmpty {
                         finished = true
                         self.awaitingNetworkRecovery = false
@@ -235,6 +308,8 @@ final class POSViewModel: ObservableObject {
                         ticker?.cancel(); ticker = nil
                         playDeclineSound()
                         fail(failMsg)
+                        self.isCharging = false
+                        self.step = .result
                     } else {
                         if !showingWait {
                             showingWait = true
@@ -254,8 +329,11 @@ final class POSViewModel: ObservableObject {
                     self.awaitingNetworkRecovery = false
                     self.pendingIntentId = nil
                     ticker?.cancel(); ticker = nil
+                    self.statusMessage = "Card declined"
                     playDeclineSound()
                     fail(piStatus.status)
+                    self.isCharging = false
+                    self.step = .result
 
                 default:
                     break
@@ -287,18 +365,24 @@ final class POSViewModel: ObservableObject {
                         self.pendingIntentId = nil
                         statusMessage = "Payment completed!"
                         result = .approved
+                        self.isCharging = false
+                        step = .result
                     case "requires_payment_method":
                         finished = true
                         self.awaitingNetworkRecovery = false
                         self.pendingIntentId = nil
                         playDeclineSound()
                         fail(piStatus.latest_charge_failure_message ?? "Card declined")
+                        self.isCharging = false
+                        self.step = .result
                     case "canceled":
                         finished = true
                         self.awaitingNetworkRecovery = false
                         self.pendingIntentId = nil
                         playDeclineSound()
                         fail("canceled")
+                        self.isCharging = false
+                        self.step = .result
                     default:
                         break
                     }
@@ -315,6 +399,8 @@ final class POSViewModel: ObservableObject {
             self.pendingIntentId = nil
             playDeclineSound()
             fail("No card presented (timeout)")
+            self.isCharging = false
+            self.step = .result
         }
 
         // If the app never reconnected to verify the payment and polling never succeeded or failed,
@@ -323,21 +409,34 @@ final class POSViewModel: ObservableObject {
             await MainActor.run {
                 playDeclineSound()
                 self.statusMessage = "Status unknown — please check Stripe dashboard before retrying."
+                self.isCharging = false
+                self.step = .result
             }
         }
 
+        self.isCharging = false
         scheduleReset(finalWasSuccess: finalWasSuccess)
     }
 
+    func resetStateForNewTransaction() {
+        amountCents = 0
+        category = nil
+        result = nil
+        statusMessage = "Ready for next transaction."
+        isCharging = false
+        artNumber = nil
+        step = .category
+        // Clean up any in-flight polling context
+        awaitingNetworkRecovery = false
+        pendingIntentId = nil
+    }
+
     private func scheduleReset(finalWasSuccess: Bool) {
+        guard autoResetEnabled else { return }
         let delay: Double = finalWasSuccess ? Timing.successResetDelay : Timing.failResetDelay
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                self.amountCents = 0
-                self.category = nil
-                self.result = nil
-                self.statusMessage = "Ready for next transaction."
-                self.isCharging = false
+                self.resetStateForNewTransaction()
             }
         }
     }

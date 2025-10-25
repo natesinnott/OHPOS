@@ -13,16 +13,24 @@ struct AmountKeypad: View {
         VStack(spacing: 12) {
             Text(displayAmount(amountCents)).font(.system(size:48, weight: .bold, design: .rounded))
             let rows = [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["C", "0", "⌫"]]
-            ForEach(rows, id: \.self) { row in
-                HStack(spacing: 12) {
-                    ForEach(row, id: \.self) { key in
-                        Button {
-                            tap(key)
-                        } label: {
-                            Text(key).font(.title).frame(maxWidth: .infinity).padding().background(Color.gray.opacity(0.15)).cornerRadius(12)
+            GeometryReader { proxy in
+                let rowHeight = (proxy.size.height - 3 * 12) / 4
+                let columnWidth = (proxy.size.width - 2 * 12) / 3
+
+                VStack(spacing: 12) {
+                    ForEach(rows, id: \.self) { row in
+                        HStack(spacing: 12) {
+                            ForEach(row, id: \.self) { key in
+                                Button {
+                                    tap(key)
+                                } label: {
+                                    Text(key).font(.title).frame(width: columnWidth, height: rowHeight).background(Color.gray.opacity(0.15)).cornerRadius(12)
+                                }
+                            }
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }

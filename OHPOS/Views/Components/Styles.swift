@@ -31,6 +31,7 @@ struct Keypad: View {
                             Button { tap(key) } label: {
                                 Text(key)
                                     .font(.system(size: fontSize, weight: .semibold, design: .default))
+                                    .foregroundStyle(.primary)
                                     .frame(maxWidth: .infinity)
                                     .frame(height: buttonH)
                                     .contentShape(Rectangle())
@@ -60,16 +61,17 @@ struct Keypad: View {
 struct GlassPadStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .frame(minWidth: 72)
+            .frame(minWidth: 72, minHeight: 64)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(.thinMaterial)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(Color.white.opacity(configuration.isPressed ? 0.8 : 0.5), lineWidth: 0.8)
+                    )
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(Color.white.opacity(0.6), lineWidth: 0.5)
-            )
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .shadow(color: .black.opacity(configuration.isPressed ? 0.05 : 0.12), radius: configuration.isPressed ? 4 : 10, y: 4)
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
             .animation(.spring(response: 0.25, dampingFraction: 0.85), value: configuration.isPressed)
     }
 }
@@ -78,12 +80,30 @@ struct GlassButtonStyle: ButtonStyle {
     let isEnabled: Bool
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .font(.headline.weight(.semibold))
             .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 52)
+            .padding(.horizontal, 8)
             .background(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(isEnabled ? Color.accentColor : Color.gray.opacity(0.45))
+                    .fill(isEnabled ? Color.accentColor : Color.gray.opacity(0.35))
             )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.white.opacity(isEnabled ? 0.4 : 0.25), lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.spring(response: 0.25, dampingFraction: 0.9), value: configuration.isPressed)
+    }
+}
+
+struct TrailingIconLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack {
+            configuration.title
+            configuration.icon
+        }
     }
 }
