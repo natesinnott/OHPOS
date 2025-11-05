@@ -70,27 +70,39 @@ struct StepSummaryView: View {
                     Button {
                         vm.goNext() // triggers charge()
                     } label: {
-                        Label("Charge \(displayAmount(vm.amountCents))", systemImage: "creditcard")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
+                        Label(
+                            Backend.shared.isConfigured ? "Charge \(displayAmount(vm.amountCents))" : "API Key Not Configured",
+                            systemImage: Backend.shared.isConfigured ? "creditcard" : "exclamationmark.triangle"
+                        )
+                        .font(.title2.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
                     }
-                    .buttonStyle(GlassButtonStyle(isEnabled: true))
-                    .disabled(vm.isCharging)
+                    .buttonStyle(GlassButtonStyle(isEnabled: true,
+                                                  size: .large,
+                                                  respectsLabelFont: true,
+                                                  dynamicTypeOverride: .accessibility1))
+                    .disabled(vm.isCharging || !Backend.shared.isConfigured)
                     .accessibilityLabel("Charge customer for \(displayAmount(vm.amountCents))")
-
+                    
                     Button {
                         vm.goBack()
                     } label: {
                         Label("Back", systemImage: "chevron.left")
+                            .font(.title2.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
                     }
                     .buttonStyle(GlassButtonStyle(isEnabled: true))
-                    .tint(.secondary)
                     .accessibilityHint("Go back to edit amount")
                 }
                 .frame(maxWidth: 600)
                 .padding(.top, 12)
+                .dynamicTypeSize(.xSmall ... .accessibility3)
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 32)

@@ -2,26 +2,30 @@ import SwiftUI
 
 struct StepArtNumberView: View {
     @ObservedObject var vm: POSViewModel
-    private let numberColumns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 5)
+
 
     var body: some View {
-        VStack(spacing: 20) {
-            // Header
-
-
-            // Art number picker
-            GlassCard {
-                GeometryReader { proxy in
+        GeometryReader { outer in
+            let cardHeight = outer.size.height * 0.92
+            let cardWidth = min(1100, max(320, outer.size.width - 48))
+            VStack(spacing: 20) {
+                // Art number picker
+                GlassCard {
                     // Layout constants
                     let rows = 4
+                    let columnsCount = 5
                     let gridSpacing: CGFloat = 10
                     let headerReserved: CGFloat = 60   // title height inside the card
-                    let footerReserved: CGFloat = 52   // summary + clear row
+                    let footerReserved: CGFloat = 120  // summary + clear row (extra clearance)
                     let verticalInsets: CGFloat = 16   // inner top/bottom padding
+                    let horizontalInsets: CGFloat = 16  // inner left/right padding
 
-                    // Compute tall button height to fill space evenly
-                    let gridAvailable = max(0, proxy.size.height - headerReserved - footerReserved - verticalInsets * 2)
-                    let cellHeight = max(52, (gridAvailable - CGFloat(rows - 1) * gridSpacing) / CGFloat(rows))
+                    // Compute metrics from the **stable** card size so they don't change mid-transition
+                    let gridAvailable = max(0, cardHeight - headerReserved - footerReserved - verticalInsets * 2)
+                    let cellHeight = snap(max(52, (gridAvailable - CGFloat(rows - 1) * gridSpacing) / CGFloat(rows)))
+
+                    let availableWidth = max(0, cardWidth - horizontalInsets * 2)
+                    let cellWidth = snap(max(72, (availableWidth - CGFloat(columnsCount - 1) * gridSpacing) / CGFloat(columnsCount)))
 
                     VStack(spacing: 14) {
                         // Header
@@ -31,42 +35,43 @@ struct StepArtNumberView: View {
                             .accessibilityAddTraits(.isHeader)
                             .frame(height: headerReserved, alignment: .center)
 
-                        // Grid of 1–20 selectable buttons
-                        LazyVGrid(columns: numberColumns, alignment: .center, spacing: gridSpacing) {
-                            ForEach(1...20, id: \.self) { n in
-                                Button {
-                                    vm.artNumber = n
-                                } label: {
-                                    Text("\(n)")
-                                        .font(.title)
-                                        .frame(maxWidth: .infinity)
+                        // Grid of 1–20 selectable buttons (fixed layout to prevent reflow during transitions)
+                        let numbers = Array(1...20)
+                        let rowsData: [[Int]] = stride(from: 0, to: numbers.count, by: columnsCount).map {
+                            Array(numbers[$0 ..< min($0 + columnsCount, numbers.count)])
+                        }
+                        VStack(spacing: gridSpacing) {
+                            ForEach(rowsData, id: \.self) { row in
+                                HStack(spacing: gridSpacing) {
+                                    ForEach(row, id: \.self) { n in
+                                        Button {
+                                            vm.artNumber = n
+                                        } label: {
+                                            let isSelected = (vm.artNumber == n)
+                                            Text("\(n)")
+                                                .font(.title)
+                                                .frame(width: cellWidth, height: cellHeight)
+                                                .background(isSelected ? Color(red: 0.01, green: 0.35, blue: 0.38).opacity(0.18) : Color.gray.opacity(0.15))
+                                                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 12)
+                                                        .stroke(isSelected ? Color(red: 0.01, green: 0.35, blue: 0.38) : Color.clear, lineWidth: 2)
+                                                )
+                                                .cornerRadius(12)
+                                                .contentShape(RoundedRectangle(cornerRadius: 12))
+                                                .accessibilityValue(isSelected ? "Selected" : "")
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel("Art number \(n)")
+                                    }
                                 }
-                                .buttonStyle(.plain)
-                                .frame(height: cellHeight)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(vm.artNumber == n ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.15))
-                                )
-                                .foregroundStyle(vm.artNumber == n ? Color.accentColor : Color.primary)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                                .contentShape(RoundedRectangle(cornerRadius: 12))
-                                .accessibilityLabel("Art number \(n)")
-                                .accessibilityAddTraits(vm.artNumber == n ? .isSelected : [])
                             }
                         }
+                        .transaction { t in t.disablesAnimations = true }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                         // Current selection summary + Clear
                         HStack {
-                            if let current = vm.artNumber {
-                                Label("Selected: # \(current)", systemImage: "checkmark.circle.fill")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Label("No number selected", systemImage: "circle")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
                             Spacer()
                             Button(role: .none) {
                                 vm.artNumber = nil
@@ -76,53 +81,35 @@ struct StepArtNumberView: View {
                                     .padding(.horizontal, 12)
                             }
                             .buttonStyle(GlassButtonStyle(isEnabled: vm.artNumber != nil))
+                            .tint(.red)
                             .disabled(vm.artNumber == nil)
                             .accessibilityHint("Clear selected art number")
                             .padding(.leading, 12)
                         }
+                        .padding(.bottom, 16)
                         .frame(height: footerReserved)
                     }
-                    .padding(.vertical, verticalInsets)
+                    .animation(nil, value: vm.step)
+                    .padding(.top, verticalInsets)
+                    .padding(.bottom, verticalInsets + 28)
+                    .padding(.horizontal, horizontalInsets)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
+                .compositingGroup() // Render as a single layer so the whole card moves together during transitions
+                .frame(width: cardWidth, height: cardHeight, alignment: .top) // fixed width + height to freeze layout during transitions
+                // Strict masking so nothing renders outside the card while it slides
+                .mask(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous).inset(by: -8)
+                )
             }
-            .frame(maxHeight: .infinity)
-
-            Spacer(minLength: 0)
-
-            // Footer controls
-            HStack(spacing: 12) {
-                Button {
-                    vm.goBack()
-                } label: {
-                    Label("Back", systemImage: "chevron.left")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(GlassButtonStyle(isEnabled: true))
-                .accessibilityHint("Go back to category selection")
-
-                Button {
-                    vm.goNext()
-                } label: {
-                    Label("Continue", systemImage: "chevron.right")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .labelStyle(TrailingIconLabelStyle())
-                }
-                .buttonStyle(GlassButtonStyle(isEnabled: vm.canContinueFromArtNumber))
-                .disabled(!vm.canContinueFromArtNumber)
-                .accessibilityLabel("Continue to amount entry")
-            }
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
-}
+    
 
-#Preview {
-    let vm = POSViewModel()
-    vm.category = .art
-    return StepArtNumberView(vm: vm)
-        .frame(width: 600, height: 480)
+    private func snap(_ v: CGFloat) -> CGFloat {
+        let scale = UIScreen.main.scale
+        return (v * scale).rounded() / scale
+    }
 }

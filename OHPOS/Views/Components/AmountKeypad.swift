@@ -24,7 +24,14 @@ struct AmountKeypad: View {
                                 Button {
                                     tap(key)
                                 } label: {
-                                    Text(key).font(.title).frame(width: columnWidth, height: rowHeight).background(Color.gray.opacity(0.15)).cornerRadius(12)
+                                    Text(key)
+                                        .font(.title)
+                                        .frame(width: columnWidth, height: rowHeight)
+                                        .background(
+                                            key == "C" ? Color.red.opacity(0.5) : Color.gray.opacity(0.15)
+                                        )
+                                        .foregroundColor(key == "C" ? .white : .primary)
+                                        .cornerRadius(12)
                                 }
                             }
                         }

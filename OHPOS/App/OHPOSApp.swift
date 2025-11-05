@@ -9,6 +9,9 @@ import SwiftUI
 
 @main
 struct OHPOSApp: App {
+    init() {
+        Backend.shared.debugPOSKeySource()
+    }
     var body: some Scene {
         WindowGroup {
             POSFlowView()

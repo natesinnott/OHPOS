@@ -57,15 +57,6 @@ final class POSViewModel: ObservableObject {
 
     private let backend: TerminalBackend
 
-    private let session: URLSession = {
-        let cfg = URLSessionConfiguration.default
-        cfg.waitsForConnectivity = true
-        cfg.allowsConstrainedNetworkAccess = true
-        cfg.allowsExpensiveNetworkAccess = true
-        cfg.timeoutIntervalForRequest = 12
-        cfg.timeoutIntervalForResource = 30
-        return URLSession(configuration: cfg)
-    }()
 
     private let pathMonitor = NWPathMonitor()
     private let pathQueue = DispatchQueue(label: "ohpos.netpath")
@@ -143,97 +134,41 @@ final class POSViewModel: ObservableObject {
             return
         }
 
-        guard let url = URL(string: "https://api.operahouseplayers.org/api/payments") else {
-            statusMessage = "Error: Invalid backend URL"
-            isCharging = false
-            return
-        }
+        let desc: String = {
+            if category == .art, let n = artNumber { return "Art #\(n) Sale" }
+            return ((category?.rawValue ?? "Payment").capitalized) + " Sale"
+        }()
 
-        var desc: String
-        if category == .art, let n = artNumber {
-            desc = "Art #\(n) Sale"
-        } else {
-            desc = ((category?.rawValue ?? "Payment").capitalized) + " Sale"
-        }
-
-        let payload: [String: Any] = [
-            "amount": amountCents,
-            "currency": "usd",
-            "category": category?.rawValue ?? "unknown",
-            "description": desc
-        ]
-
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 15
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-
-        self.session.dataTask(with: request) { [weak self] data, response, error in
-            guard let self = self else { return }
-            Task { @MainActor in
-                if let error = error {
-                    self.statusMessage = "Network error: \(error.localizedDescription)"
-                    self.isCharging = false
-                    self.result = .failed
-                    self.step = .result
-                    self.scheduleReset(finalWasSuccess: false)
-                    return
-                }
-
-                guard let httpResponse = response as? HTTPURLResponse else {
-                    self.statusMessage = "No response from backend"
-                    self.isCharging = false
-                    self.result = .failed
-                    self.step = .result
-                    self.scheduleReset(finalWasSuccess: false)
-                    return
-                }
-
-                guard (200..<300).contains(httpResponse.statusCode),
-                      let data = data,
-                      let create = try? JSONDecoder().decode(CreatePIResponse.self, from: data) else {
-                    self.statusMessage = "Backend error: \(HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode))"
-                    self.isCharging = false
-                    self.result = .failed
-                    self.step = .result
-                    self.scheduleReset(finalWasSuccess: false)
-                    return
-                }
+        Task { @MainActor in
+            do {
+                let create = try await Backend.shared.createPaymentIntent(
+                    amount: amountCents,
+                    currency: "usd",
+                    category: category?.rawValue ?? "unknown",
+                    artNumber: artNumber
+                )
 
                 let intentID = create.id
                 self.statusMessage = "Sending to reader…"
 
-                Task { @MainActor in
-                    do {
-                        let success = try await self.backend.processOnReader(paymentIntentId: intentID)
-                        if success {
-                            self.statusMessage = "Processing on reader…"
-                        } else {
-                            // Treat a failed start as indeterminate; verify with backend before declaring failure
-                            self.awaitingNetworkRecovery = true
-                            self.pendingIntentId = intentID
-                            self.statusMessage = "Reader error — verifying payment…"
-                            await self.pollUntilTerminal(intentID: intentID)
-                            return
-                        }
-
-                        // --- Polling ---
-                        if success {
-                            self.statusMessage = "Processing on reader…"
-                            await self.pollUntilTerminal(intentID: intentID)
-                        }
-                    } catch {
-                        // Treat network errors/timeouts as INDETERMINATE: verify with backend instead of failing immediately
-                        self.awaitingNetworkRecovery = true
-                        self.pendingIntentId = intentID
-                        self.statusMessage = "Network issue — verifying payment…"
-                        await self.pollUntilTerminal(intentID: intentID)
-                        return
-                    }
+                let success = try await self.backend.processOnReader(paymentIntentId: intentID)
+                if success {
+                    self.statusMessage = "Processing on reader…"
+                    await self.pollUntilTerminal(intentID: intentID)
+                } else {
+                    self.awaitingNetworkRecovery = true
+                    self.pendingIntentId = intentID
+                    self.statusMessage = "Reader error — verifying payment…"
+                    await self.pollUntilTerminal(intentID: intentID)
                 }
+            } catch {
+                self.statusMessage = "Backend error: \(error.localizedDescription)"
+                self.isCharging = false
+                self.result = .failed
+                self.step = .result
+                self.scheduleReset(finalWasSuccess: false)
             }
-        }.resume()
+        }
     }
 
     private func fail(_ message: String) {

@@ -46,29 +46,6 @@ struct StepAmountView: View {
                 .padding(24)
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 12) {
-                Button { vm.goBack() } label: {
-                    Label("Back", systemImage: "chevron.left")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(GlassButtonStyle(isEnabled: true))
-                .accessibilityHint("Go back to previous step")
-
-                Button { vm.goNext() } label: {
-                    Label("Continue", systemImage: "chevron.right")
-                        .labelStyle(TrailingIconLabelStyle())
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(GlassButtonStyle(isEnabled: vm.canContinueFromAmount))
-                .disabled(!vm.canContinueFromAmount)
-                .accessibilityLabel("Continue to summary screen")
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 12)
-        }
     }
 }
 

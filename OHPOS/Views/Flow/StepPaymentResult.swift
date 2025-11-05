@@ -20,7 +20,7 @@ struct StepPaymentResult: View {
             VStack(spacing: 16) {
                 VStack(spacing: 20) {
                     Image(systemName: vm.result == .approved ? "checkmark.circle" : "creditcard.trianglebadge.exclamationmark")
-                        .foregroundColor(vm.result == .approved ? .green : .red)
+                        .foregroundColor(vm.result == .approved ? Color(red: 0, green: 1, blue: 0) : .red)
                         .font(.system(size: 72, weight: .bold))
                         .symbolRenderingMode(.hierarchical)
 
