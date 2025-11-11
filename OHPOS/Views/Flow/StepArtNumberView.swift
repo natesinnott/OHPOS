@@ -12,12 +12,12 @@ struct StepArtNumberView: View {
                 // Art number picker
                 GlassCard {
                     // Layout constants
-                    let rows = 4
-                    let columnsCount = 5
+                    let rows = 5
+                    let columnsCount = 6
                     let gridSpacing: CGFloat = 10
-                    let headerReserved: CGFloat = 60   // title height inside the card
+                    let headerReserved: CGFloat = 48   // title height inside the card
                     let footerReserved: CGFloat = 120  // summary + clear row (extra clearance)
-                    let verticalInsets: CGFloat = 16   // inner top/bottom padding
+                    let verticalInsets: CGFloat = 12   // inner top/bottom padding
                     let horizontalInsets: CGFloat = 16  // inner left/right padding
 
                     // Compute metrics from the **stable** card size so they don't change mid-transition
@@ -35,8 +35,8 @@ struct StepArtNumberView: View {
                             .accessibilityAddTraits(.isHeader)
                             .frame(height: headerReserved, alignment: .center)
 
-                        // Grid of 1–20 selectable buttons (fixed layout to prevent reflow during transitions)
-                        let numbers = Array(1...20)
+                        // Grid of 1–26 selectable buttons (fixed layout to prevent reflow during transitions)
+                        let numbers = Array(1...26)
                         let rowsData: [[Int]] = stride(from: 0, to: numbers.count, by: columnsCount).map {
                             Array(numbers[$0 ..< min($0 + columnsCount, numbers.count)])
                         }
